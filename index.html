@@ -426,9 +426,22 @@ function applySession(user) {
   document.getElementById('topbar-user').textContent = `👤 ${user.name} (${user.role === 'admin' ? '관리자' : '조회자'})`;
   document.getElementById('topbar-user').style.display = '';
   document.getElementById('logout-btn').style.display = '';
-  if (user.role === 'admin') {
-    document.getElementById('tab-btn-users').style.display = '';
-  }
+
+  // ── 역할별 탭 표시 제어 ──
+  const isAdmin = user.role === 'admin';
+  // viewer는 출신중학교·학생조회·졸업생사후관리·사용자관리 숨김
+  const viewerHiddenTabs = ['middle', 'student-search', 'graduates', 'users'];
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    const tab = btn.dataset.tab;
+    if (tab === 'users') {
+      btn.style.display = isAdmin ? '' : 'none';
+    } else if (viewerHiddenTabs.includes(tab)) {
+      btn.style.display = isAdmin ? '' : 'none';
+    } else {
+      btn.style.display = '';
+    }
+  });
+
   hideLogin();
   // ★ 로그인 직후 구글 시트 데이터 자동 로드
   loadDataFromGAS();
@@ -438,7 +451,8 @@ function doLogout() {
   sessionStorage.removeItem('gasUser');
   document.getElementById('topbar-user').style.display = 'none';
   document.getElementById('logout-btn').style.display = 'none';
-  document.getElementById('tab-btn-users').style.display = 'none';
+  // 탭 전부 숨김 (로그인 화면으로 돌아가므로)
+  document.querySelectorAll('.tab-btn').forEach(btn => { btn.style.display = 'none'; });
   // DB 초기화
   DB=[]; YEARS=[]; metricsMap={}; summaryCache={};
   originalSheetRows=[]; originalHeaders=[];
@@ -460,29 +474,42 @@ async function loadDataFromGAS() {
       renderAll();
       return;
     }
-    // ── 학생DB 변환 (엑셀 rawRows 형식과 동일하게) ──
+
+    // ── 학생DB 변환 ──
     const rawRows = data.students || [];
     originalHeaders = rawRows.length > 0 ? Object.keys(rawRows[0]).map(h => String(h).trim()) : [];
     originalSheetRows = rawRows.map(r => ({...r}));
-    DB = rawRows.map((r, i) => normalizeRow(r, i)).filter(r => r.이름 && r.입학년도);
+
+    // ★ normalizeRow를 한 번에 처리 (반복 filter 제거)
+    DB = [];
+    for (let i = 0; i < rawRows.length; i++) {
+      const r = normalizeRow(rawRows[i], i);
+      if (r.이름 && r.입학년도) DB.push(r);
+    }
     YEARS = [...new Set(DB.map(r => r.입학년도).filter(Boolean))].sort((a,b) => a-b);
 
     // ── 산출식/목표치 변환 ──
     metricsMap = parseMetricsFromGAS(data.metrics || []);
+
+    // ★ summaryCache 전체 연도 미리 계산 (렌더링 시 계산 없음)
     summaryCache = {};
+    for (const yr of YEARS) getSummary(yr);
+
     selStudentIdx = null; selGradIdx = null; gradSearch = ''; gradYear = '전체';
 
     setFileStatus(DB.length ? `구글 시트 연결 완료 · ${DB.length}명` : '데이터 없음', DB.length ? 'ok' : 'warn');
     setLoadBanner(`<strong>구글 스프레드시트</strong> 연동 완료 · 학생 <strong>${fmtNum(DB.length)}명</strong> · 학년도 ${YEARS.join(', ')}`, 'ok', true);
 
-    // 구글 시트 모드에서는 엑셀 관련 버튼 숨김, 새로고침 버튼 표시
+    // 구글 시트 모드 — 엑셀 버튼 숨김
     document.getElementById('export-btn').style.display = 'none';
     document.getElementById('save-direct-btn').style.display = 'none';
     document.getElementById('open-rw-btn').style.display = 'none';
     document.getElementById('pick-file-btn').style.display = 'none';
     document.getElementById('gas-refresh-btn').style.display = '';
 
-    renderAll();
+    // ★ requestAnimationFrame으로 브라우저 페인트 직후 렌더 — 체감 속도 향상
+    requestAnimationFrame(() => renderAll());
+
   } catch(e) {
     setFileStatus('연결 오류','warn');
     setLoadBanner('<strong>구글 시트 연결 오류</strong> — GAS_URL을 확인하거나 잠시 후 다시 시도해주세요.','warn',true);
@@ -2110,17 +2137,27 @@ async function loadWorkbookFromArrayBuffer(buffer,name=''){
   const rawAoa=XLSX.utils.sheet_to_json(dbSheet,{header:1,defval:''});
   originalHeaders=(rawAoa[0]||[]).map(v=>String(v||'').trim());
   originalSheetRows=rawRows.map(r=>({...r}));
-  DB=rawRows.map((r,i)=>normalizeRow(r,i)).filter(r=>r.이름&&r.입학년도);
+
+  // ★ 한 번에 파싱
+  DB = [];
+  for (let i = 0; i < rawRows.length; i++) {
+    const r = normalizeRow(rawRows[i], i);
+    if (r.이름 && r.입학년도) DB.push(r);
+  }
   YEARS=[...new Set(DB.map(r=>r.입학년도).filter(Boolean))].sort((a,b)=>a-b);
   metricsMap=targetSheet?parseMetrics(targetSheet):{};
+
+  // ★ summaryCache 미리 계산
   summaryCache={};
+  for (const yr of YEARS) getSummary(yr);
+
   selStudentIdx=null; selGradIdx=null; gradSearch=''; gradYear='전체';
   workbookName=name||workbookName||DEFAULT_XLSX;
   setFileStatus(DB.length?`엑셀 연결 완료 · ${workbookName}`:'데이터 없음',DB.length?'ok':'warn');
   setLoadBanner(`<strong>${escapeHtml(workbookName)}</strong> 불러오기 완료 · 학생 ${fmtNum(DB.length)}명 · 데이터 학년도 ${YEARS.join(', ')} · 목표치는 2번째 시트 기준`,'ok',true);
   if(DB.length) document.getElementById('export-btn').style.display='';
   document.getElementById('save-direct-btn').style.display = canDirectWrite ? '' : 'none';
-  renderAll();
+  requestAnimationFrame(() => renderAll());
 }
 async function tryAutoLoadDefaultFile(){
   // 구글 시트 모드에서는 사용하지 않음 — loadDataFromGAS()가 대신 처리
